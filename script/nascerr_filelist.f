@@ -10,5 +10,9 @@
 NASCERR/rtl/typedefs.sv
 NASCERR/rtl/tbec_rsc_encoder.sv
 NASCERR/rtl/tbec_rsc_decoder.sv
+NASCERR/rtl/tbec_rsc_2d2p4x_encoder.sv
+NASCERR/rtl/tbec_rsc_2d2p4x_decoder.sv
+NASCERR/rtl/tbec_rsc_4d4x_encoder.sv
+NASCERR/rtl/tbec_rsc_4d4x_decoder.sv
 NASCERR/rtl/control.sv
 NASCERR/rtl/top.sv

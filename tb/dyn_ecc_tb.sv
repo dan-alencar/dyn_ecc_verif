@@ -18,6 +18,7 @@ module dyn_ecc_tb #(
   import uvm_pkg::*;
   import sram_pkg::*;
   import dyn_ecc_test_pkg::*;
+  import dyn_ecc_verif_param_pkg::*;
 
   // Clock and active-low reset: declared (as variables) before the interfaces
   // that reference them, otherwise clk/rst_n get inferred as implicit nets and
@@ -86,7 +87,7 @@ module dyn_ecc_tb #(
       assign mux_if0.rsig = flag_out;
     end
     else begin : g_nascerr
-      top dut (
+      top #(.TBEC_RSC_ALGORITHM(TBEC_RSC_ALGORITHM)) dut (
         .sel(ecc_sel),
         .read_en(read_en),
         .write_en(write_en),

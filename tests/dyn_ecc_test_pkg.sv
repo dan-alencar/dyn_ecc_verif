@@ -11,9 +11,7 @@ package dyn_ecc_test_pkg;
   import sram_pkg::*;
   import sideband_pkg::*;
   import typedefs::*;
-
-  parameter DEC_WORD_WIDTH = 8;
-  parameter ENC_WORD_WIDTH = 2*DEC_WORD_WIDTH;
+  import dyn_ecc_verif_param_pkg::*;
 
   // Virtual sequencer (needed by the sequences' p_sequencer declaration).
   `include "dyn_ecc_virtual_sequencer.sv"

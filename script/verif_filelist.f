@@ -25,6 +25,12 @@ vips/sram/sram_pkg.sv
 vips/sideband/sideband_pkg.sv
 
 // -----------------------------------------------------------------------------
+// Verification parameters package (widths + TBEC-RSC algorithm select).
+// Compiled before the test package and TB, which import it.
+// -----------------------------------------------------------------------------
+packages/dyn_ecc_verif_param_pkg.sv
+
+// -----------------------------------------------------------------------------
 // Environment / sequences / tests (one package, bundled).
 // -----------------------------------------------------------------------------
 +incdir+seqs

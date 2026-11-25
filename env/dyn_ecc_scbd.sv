@@ -155,7 +155,7 @@ class dyn_ecc_scbd extends uvm_scoreboard;
           mcu_d = mcu_write_t_q.pop_front();
           s0_d  = sram0_write_t_q.pop_front();
           s1_d  = sram1_write_t_q.pop_front();
-          enc   = enc_tbec_rsc(mcu_d[7:0]);
+          enc   = enc_tbec_rsc_sel(mcu_d[7:0]);
           `uvm_info(get_type_name(),
                     $sformatf("WRITE TBEC_RSC: enc(mcu=0x%0h)=0x%0h; comparing msb=0x%0h vs sram0=0x%0h, lsb=0x%0h vs sram1=0x%0h",
                               mcu_d[7:0], enc, enc[15:8], s0_d[7:0], enc[7:0], s1_d[7:0]),
@@ -207,7 +207,7 @@ class dyn_ecc_scbd extends uvm_scoreboard;
           mcu_d = mcu_read_t_q.pop_front();
           s0_d  = sram0_read_t_q.pop_front();
           s1_d  = sram1_read_t_q.pop_front();
-          dec   = dec_tbec_rsc({s0_d[7:0], s1_d[7:0]});
+          dec   = dec_tbec_rsc_sel({s0_d[7:0], s1_d[7:0]});
           `uvm_info(get_type_name(),
                     $sformatf("READ TBEC_RSC: dec({sram0=0x%0h,sram1=0x%0h})=0x%0h; comparing vs mcu=0x%0h",
                               s0_d[7:0], s1_d[7:0], dec, mcu_d[7:0]), UVM_HIGH)
@@ -395,6 +395,199 @@ class dyn_ecc_scbd extends uvm_scoreboard;
     end
 
     return data_out;
+  endfunction
+
+  // ===========================================================================
+  //  TBEC-RSC-8 "no-LUT" variants, modelled strictly from NASCERR/docs/*:
+  //    - TBEC-RSC-8_2D2P4X.pdf  (2 diagonals D + 2 parities P + 4 cross-checks X)
+  //    - TBEC-RSC-8_4D4X.pdf    (4 diagonals D + 4 cross-checks X)
+  //
+  //  Physical 16-bit word (both docs, Figure 1), positions 1..16:
+  //    pos:  1  2  3  4  5  6  7  8 | 9  10 11 12 | 13   14   15   16
+  //          A1 B1 A2 B2 A3 B3 A4 B4| D1 D2 P1 P2 | XA13 XA24 XB13 XB24  (2D2P4X)
+  //          A1 B1 A2 B2 A3 B3 A4 B4| D1 D2 D3 D4 | XA13 XA24 XB13 XB24  (4D4X)
+  //
+  //  The data form a 2x4 logical matrix (row A: A1..A4, row B: B1..B4), stored
+  //  physically column by column. The 8-bit data word is carried MSB-first in
+  //  physical order, so for data_in[7:0]:
+  //    data_in[7]=A1 [6]=B1 [5]=A2 [4]=B2 [3]=A3 [2]=B3 [1]=A4 [0]=B4.
+  //  (Checked against the docs' worked example d=11100101 = "A1 B1 A2 B2 A3 B3
+  //   A4 B4", which the string spells out directly.)
+  //
+  //  Codeword packing used here (16-bit value = {up byte, down byte}):
+  //    code[15:8] = the 8 data bits (physical positions 1..8), i.e. == data_in;
+  //    code[7:4]  = the D/P (or D) controls (positions 9..12);
+  //    code[3:0]  = the four X cross-checks (positions 13..16).
+  //  Thus bit index i of the 16-bit value maps to physical position (16-i), so
+  //  bit adjacency == physical adjacency (needed by the burst-3 window test).
+  // ===========================================================================
+
+  // Unpack an 8-bit data/mask word into the 8 named cells (A1..B4), physical
+  // column order. data[7]=A1 ... data[0]=B4 (see layout note above).
+  // {D1,D2,P1,P2} for the 2D2P4X code (doc 2D2P4X, sections 2.1 and 2.2).
+  function logic [3:0] ctrl_2d2p(logic [7:0] data);
+    logic A1,B1,A2,B2,A3,B3,A4,B4;
+    {A1,B1,A2,B2,A3,B3,A4,B4} = data;
+    return { A2 ^ A3 ^ B4,        // D1 = A2 (+) A3 (+) B4
+             A1 ^ A2 ^ B2 ^ A4,   // D2 = A1 (+) A2 (+) B2 (+) A4
+             A1 ^ B1 ^ A2 ^ B2,   // P1 = A1 (+) B1 (+) A2 (+) B2
+             A3 ^ B3 ^ A4 ^ B4 }; // P2 = A3 (+) B3 (+) A4 (+) B4
+  endfunction
+
+  // {D1,D2,D3,D4} for the 4D4X code (doc 4D4X, section 1.1).
+  function logic [3:0] ctrl_4d(logic [7:0] data);
+    logic A1,B1,A2,B2,A3,B3,A4,B4;
+    {A1,B1,A2,B2,A3,B3,A4,B4} = data;
+    return { A1 ^ B2 ^ A3,   // D1 = A1 (+) B2 (+) A3
+             A2 ^ B1 ^ A4,   // D2 = A2 (+) B1 (+) A4
+             A3 ^ B4 ^ B1,   // D3 = A3 (+) B4 (+) B1
+             A4 ^ B3 ^ B2 }; // D4 = A4 (+) B3 (+) B2
+  endfunction
+
+  // {X_A13,X_A24,X_B13,X_B24}: the four cross-checks, identical in both docs
+  // (2D2P4X section 3.3; 4D4X section 1.2).
+  function logic [3:0] ctrl_x(logic [7:0] data);
+    logic A1,B1,A2,B2,A3,B3,A4,B4;
+    {A1,B1,A2,B2,A3,B3,A4,B4} = data;
+    return { A1 ^ A3,   // X_A13 = A1 (+) A3
+             A2 ^ A4,   // X_A24 = A2 (+) A4
+             B1 ^ B3,   // X_B13 = B1 (+) B3
+             B2 ^ B4 }; // X_B24 = B2 (+) B4
+  endfunction
+
+  // Geometric burst-3 test (2D2P4X section 3.3; 4D4X section 3):
+  //   valid(E) <=> E != 0 AND (i_max(E) - i_min(E) + 1 <= 3),
+  // i.e. all set bits fit inside a window of at most three positions. Because
+  // bit adjacency equals physical adjacency in our packing, scanning the 16 bit
+  // indices is equivalent to the window test over physical positions.
+  function bit burst3(logic [15:0] E);
+    int lo, hi;
+    if (E == '0) return 1'b0;
+    lo = -1; hi = -1;
+    for (int i = 0; i < 16; i++) begin
+      if (E[i]) begin
+        if (lo == -1) lo = i;
+        hi = i;
+      end
+    end
+    return ((hi - lo + 1) <= 3);
+  endfunction
+
+  // Three candidate data-error masks m1/m2/m3 generated directly from the X
+  // syndrome sX = {u,v,w,z} (u=sX_A13, v=sX_A24, w=sX_B13, z=sX_B24). Same in
+  // both docs (2D2P4X section 3.1; 4D4X section 2). Masks are 8-bit data masks
+  // in the [A1 B1 A2 B2 A3 B3 A4 B4] order:
+  //   m1 = [u w v z 0 0 0 0]  (R1: columns 1,2)
+  //   m2 = [0 0 0 0 u w v z]  (R2: columns 3,4)
+  //   m3 = [0 0 v z u w 0 0]  (R3: columns 2,3 - note the swapped alignment)
+  function void gen_hyp(input logic [3:0] sX,
+                        output logic [7:0] m1, m2, m3);
+    logic u, v, w, z;
+    {u, v, w, z} = sX;
+    m1 = {u, w, v, z, 4'b0000};
+    m2 = {4'b0000, u, w, v, z};
+    m3 = {2'b00, v, z, u, w, 2'b00};
+  endfunction
+
+  // --- 2D2P4X encoder --------------------------------------------------------
+  // 8-bit data in -> 16-bit codeword {data, D1D2P1P2, X}.
+  function logic [15:0] enc_tbec_rsc_2d2p4x(logic [7:0] data_in);
+    return {data_in, ctrl_2d2p(data_in), ctrl_x(data_in)};
+  endfunction
+
+  // --- 2D2P4X decoder (doc 2D2P4X, section 3, Figure 3) ----------------------
+  // 16-bit codeword in -> 8-bit corrected data out.
+  function logic [7:0] dec_tbec_rsc_2d2p4x(logic [15:0] code_in);
+    logic [7:0]  data;
+    logic [3:0]  sDP, sX, eDP;
+    logic [7:0]  m [1:3];
+    logic [15:0] E;
+
+    data = code_in[15:8];
+    // Syndrome s = [sDP | sX]: residual of the D/P controls and the X checks
+    // recomputed over the received data.
+    sDP = code_in[7:4] ^ ctrl_2d2p(data);
+    sX  = code_in[3:0] ^ ctrl_x(data);
+
+    // s = 0: no error visible, keep the data.
+    if (sDP == '0 && sX == '0) return data;
+
+    // s itself confined to a <=3 window in the redundancy field (positions
+    // 9..16): the burst never touched the data, so preserve it (section 3.4).
+    if (burst3({8'b0, sDP, sX})) return data;
+
+    // Otherwise test the three regional hypotheses, in order R1, R2, R3, and
+    // accept the first whose full reconstructed error mask passes burst3.
+    gen_hyp(sX, m[1], m[2], m[3]);
+    for (int j = 1; j <= 3; j++) begin
+      if (m[j] == '0) continue;
+      eDP = sDP ^ ctrl_2d2p(m[j]);        // residual the burst left on D/P
+      E   = {m[j], eDP, 4'b0000};         // [m_j | eDP_j | 0000]
+      if (burst3(E)) return data ^ m[j];  // correction applied
+    end
+
+    // No valid hypothesis ("nao classificada"): leave the data unchanged.
+    return data;
+  endfunction
+
+  // --- 4D4X encoder ----------------------------------------------------------
+  // 8-bit data in -> 16-bit codeword {data, D1D2D3D4, X}.
+  function logic [15:0] enc_tbec_rsc_4d4p(logic [7:0] data_in);
+    return {data_in, ctrl_4d(data_in), ctrl_x(data_in)};
+  endfunction
+
+  // --- 4D4X decoder (doc 4D4X, sections 2-4, Figure 3) -----------------------
+  // 16-bit codeword in -> 8-bit corrected data out.
+  function logic [7:0] dec_tbec_rsc_4d4p(logic [15:0] code_in);
+    logic [7:0]  data;
+    logic [3:0]  sD, sX, eD;
+    logic [7:0]  m [1:3];
+    logic [15:0] E;
+
+    data = code_in[15:8];
+    // Syndrome s = [sD | sX].
+    sD = code_in[7:4] ^ ctrl_4d(data);
+    sX = code_in[3:0] ^ ctrl_x(data);
+
+    // s = 0: SEM_SINDROME, keep data (pseudocode line 2).
+    if (sD == '0 && sX == '0) return data;
+
+    // APENAS_REDUNDANCIA: s fits a <=3 window inside the redundancy field,
+    // preserve data (pseudocode line 3).
+    if (burst3({8'b0, sD, sX})) return data;
+
+    // Regional hypotheses R1, R2, R3 (pseudocode lines 4-9).
+    gen_hyp(sX, m[1], m[2], m[3]);
+    for (int j = 1; j <= 3; j++) begin
+      if (m[j] == '0) continue;           // line 6
+      eD = sD ^ ctrl_4d(m[j]);            // line 7: eD_j = sD (+) fD(m_j)
+      E  = {m[j], eD, 4'b0000};           // line 8: [m_j | eD_j | 0000]
+      if (burst3(E)) return data ^ m[j];  // line 9: correction applied
+    end
+
+    // NAO_CLASSIFICADA (line 10): preserve data.
+    return data;
+  endfunction
+
+  // --- Algorithm dispatch ----------------------------------------------------
+  // Select the TBEC-RSC reference model according to TBEC_RSC_ALGORITHM
+  // (dyn_ecc_verif_param_pkg), matching the DUT's elaboration-time choice in
+  // NASCERR/rtl/control.sv:
+  //   0 = 2D2P4X, 1 = 4D4X, any other value = current (RTL-mirror) model.
+  function logic [15:0] enc_tbec_rsc_sel(logic [7:0] data_in);
+    case (TBEC_RSC_ALGORITHM)
+      0:       return enc_tbec_rsc_2d2p4x(data_in);
+      1:       return enc_tbec_rsc_4d4p(data_in);
+      default: return enc_tbec_rsc(data_in);
+    endcase
+  endfunction
+
+  function logic [7:0] dec_tbec_rsc_sel(logic [15:0] code_in);
+    case (TBEC_RSC_ALGORITHM)
+      0:       return dec_tbec_rsc_2d2p4x(code_in);
+      1:       return dec_tbec_rsc_4d4p(code_in);
+      default: return dec_tbec_rsc(code_in);
+    endcase
   endfunction
 
 endclass
